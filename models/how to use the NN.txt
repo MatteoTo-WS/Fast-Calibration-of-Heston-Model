@@ -4,3 +4,4 @@ from src.nn_implied_volatility import load_trained_model
 predict = load_trained_model()
 # esempio di utilizzo:
 iv = predict(kappa=2.0, theta=0.05, xi=0.3, rho=-0.7, V0=0.04, K=6800.0, T=0.5)
+

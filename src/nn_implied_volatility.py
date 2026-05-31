@@ -18,7 +18,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import norm
 from scipy.optimize import brentq
-import joblib
 
 # ---- Parametri di mercato (coerenti con il dataset sintetico) ----
 S0 = 6852.66
@@ -63,20 +62,19 @@ class IVNet(nn.Module):
 
 # ---- Funzione per caricare il modello salvato e predire ----
 
-def load_trained_model(model_path="models/iv_net.pth", scaler_path="models/scaler.pkl"):
-    """Carica modello e scaler salvati e restituisce una funzione di predizione."""
-    scaler = joblib.load(scaler_path)
+def load_trained_model(path="models/iv_net.pth"):
+    """Carica il modello salvato e restituisce una funzione predict(kappa, theta, xi, rho, V0, K, T)."""
+    checkpoint = torch.load(path, weights_only=False)
     model = IVNet(input_dim=7)
-    model.load_state_dict(torch.load(model_path, weights_only=True))
+    model.load_state_dict(checkpoint["model"])
     model.eval()
+    # media e dev.std del training set per normalizzare gli input
+    mean = checkpoint["scaler_mean"]
+    scale = checkpoint["scaler_scale"]
 
     def predict_iv(kappa, theta, xi, rho, V0, K, T):
-        """
-        Predice la IV per un singolo set di parametri o per array di parametri.
-        Accetta sia scalari che array numpy.
-        """
         X = np.array([[kappa, theta, xi, rho, V0, K, T]], dtype=np.float32)
-        X_scaled = scaler.transform(X)
+        X_scaled = (X - mean) / scale  # stessa normalizzazione del training
         with torch.no_grad():
             iv = model(torch.tensor(X_scaled, dtype=torch.float32))
         return iv.item()
@@ -167,17 +165,17 @@ if __name__ == "__main__":
     rmse = np.sqrt(np.mean((y_pred - y_test) ** 2))
     print(f"\nRisultati sul Test Set:  MSE={test_losses[-1]:.6f}  RMSE={rmse:.6f}  MAE={mae:.6f}")
 
-    # ---- 6. Salvataggio modello e scaler ----
+    # ---- 6. Salvataggio modello (pesi + normalizzazione in un unico file) ----
     save_dir = os.path.join(os.path.dirname(__file__), "..", "models")
     os.makedirs(save_dir, exist_ok=True)
 
     model_path = os.path.join(save_dir, "iv_net.pth")
-    scaler_path = os.path.join(save_dir, "scaler.pkl")
-
-    torch.save(model.state_dict(), model_path)
-    joblib.dump(scaler, scaler_path)
+    torch.save({
+        "model": model.state_dict(),
+        "scaler_mean": scaler.mean_,    # media di ogni feature nel training set
+        "scaler_scale": scaler.scale_,  # dev.std di ogni feature nel training set
+    }, model_path)
     print(f"\nModello salvato in: {model_path}")
-    print(f"Scaler salvato in:  {scaler_path}")
 
     # ---- 7. Grafici ----
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -206,9 +204,10 @@ if __name__ == "__main__":
 
     # ---- 8. Esempio di utilizzo del modello salvato ----
     print("\n--- Test del modello salvato ---")
-    predict = load_trained_model(model_path, scaler_path)
+    predict = load_trained_model(model_path)
 
     # Esempio: prediciamo la IV per un set di parametri Heston
     iv_pred = predict(kappa=2.0, theta=0.05, xi=0.3, rho=-0.7, V0=0.04, K=6800.0, T=0.5)
     print(f"  predict(kappa=2.0, theta=0.05, xi=0.3, rho=-0.7, V0=0.04, K=6800, T=0.5)")
     print(f"  -> IV predetta: {iv_pred:.6f}")
+ 
