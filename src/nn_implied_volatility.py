@@ -1,9 +1,3 @@
-"""
-Rete neurale densa a 4 layer (Softplus) per approssimare la IV del modello di Heston.
-Input:  (kappa, theta, xi, rho, V0, K, T)
-Output: sigma_IV
-"""
-
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -19,10 +13,9 @@ from sklearn.preprocessing import StandardScaler
 from scipy.stats import norm
 from scipy.optimize import brentq
 
-# ---- Parametri di mercato (coerenti con il dataset sintetico) ----
+# parametri di mercato ripresi dal ds originale
 S0 = 6852.66
 r = 0.045
-
 
 # ---- Black-Scholes per inversione IV ----
 
@@ -43,9 +36,7 @@ def compute_iv(price, S, K, T, r):
     except ValueError:
         return np.nan
 
-
-# ---- Definizione della rete ----
-
+# rete
 class IVNet(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
