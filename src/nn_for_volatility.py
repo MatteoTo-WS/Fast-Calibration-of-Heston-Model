@@ -10,8 +10,6 @@ import joblib
 class heston_volatility_nn(nn.Module):
     def __init__(self):
         super(heston_volatility_nn, self).__init__()
-        # SiLU for hidden layers (better gradients than Softplus)
-        # Softplus only on the output to guarantee IV > 0
         self.network = nn.Sequential(
             nn.Linear(7, 128),
             nn.SiLU(),
@@ -75,10 +73,8 @@ def train_heston_model(csv_path='data/heston_synthetic_dataset.csv', epochs=60, 
     for epoch in range(epochs):
         model.train()
         train_loss = 0.0
-        
         # shuffle the training data
         permutation = torch.randperm(num_samples)
-        
         for i in range(0, num_samples, batch_size):
             indices = permutation[i:i + batch_size]
             batch_x, batch_y = x_train_t[indices], y_train_t[indices]
@@ -90,15 +86,14 @@ def train_heston_model(csv_path='data/heston_synthetic_dataset.csv', epochs=60, 
             train_loss += loss.item() * batch_x.size(0)
             
         train_loss /= num_samples
-        
         model.eval()
         with torch.no_grad():
             val_outputs = model(x_test_t)
             val_loss = criterion(val_outputs, y_test_t).item()
-        
-        # Step the LR scheduler based on validation loss
+
         scheduler.step(val_loss)
-            
+
+        # print every 5 epoches 
         if (epoch + 1) % 5 == 0 or epoch == 0:
             current_lr = optimizer.param_groups[0]['lr']
             print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | LR: {current_lr:.6f}")
@@ -122,12 +117,20 @@ def train_heston_model(csv_path='data/heston_synthetic_dataset.csv', epochs=60, 
 
 def heston_pytorch_objective(params, df_market, model, scaler):
     """
-    Funzione obiettivo dei minimi quadrati chiamata da scipy.optimize.minimize.
-    params = [kappa, theta, xi, rho, V0]
+    Compute the objective function for the calibration of the Heston model. 
+
+    inputs:
+     - params: list of Heston parameters [kappa, theta, xi, rho, V0]
+     - df_market: DataFrame containing market option data
+     - model: pre-trained NN
+     - scaler: StandardScaler fitted on the synthetic dataset
+
+    output:
+     - MSE: between market IV and IV predicted by the NN
+
     """
     kappa, theta, xi, rho, V0 = params
-    
-    # Penalità rigida per violazione dei vincoli finanziari (Slide 8)
+    # penalty for financial constraints
     if kappa <= 0 or theta <= 0 or xi <= 0 or rho <= -1.0 or rho >= 1.0 or V0 <= 0:
         return 1e10
         
@@ -140,18 +143,14 @@ def heston_pytorch_objective(params, df_market, model, scaler):
     inputs[:, 4] = V0
     inputs[:, 5] = (df_market['strike'] / df_market['S_0']).values
     inputs[:, 6] = df_market['time_to_maturity'].values
-    
-    # Trasformazione dei dati con lo scaler e conversione in tensore PyTorch
+    # scale and convert to PyTorch tensor
     inputs_scaled = scaler.transform(inputs)
     inputs_t = torch.tensor(inputs_scaled, dtype=torch.float32)
-    
-    # Esecuzione della rete in modalità inferenza (senza tracciare i gradienti)
+    # inference
     model.eval()
     with torch.no_grad():
-        nn_predictions = model(inputs_t).numpy().flatten()
-        
-    # Calcolo della Loss richiesta dalla slide (MSE tra IV di mercato e IV di Heston)
-    market_iv = df_market['implied_vol'].values * 100  # Convert to % to match NN output
-    mse = np.mean((market_iv - nn_predictions) ** 2)
-    
+        nn_predictions = model(inputs_t).numpy().flatten()    
+    # MSE
+    market_iv = df_market['implied_vol'].values * 100 
+    mse = np.mean((market_iv - nn_predictions) ** 2)   
     return mse
