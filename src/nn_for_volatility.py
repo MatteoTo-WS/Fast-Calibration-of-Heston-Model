@@ -13,15 +13,16 @@ class heston_volatility_nn(nn.Module):
         # define dense layers with smooth activation (softplus)
         self.network = nn.Sequential(
             nn.Linear(7, 128),
-            nn.Softplus(),
+            nn.SiLU(),
             nn.Linear(128, 128),
-            nn.Softplus(),
+            nn.SiLU(),
             nn.Linear(128, 64),
-            nn.Softplus(),
+            nn.SiLU(),
             nn.Linear(64, 32),
-            nn.Softplus(),
+            nn.SiLU(),
             # output: implied volatility
-            nn.Linear(32, 1)
+            nn.Linear(32, 1),
+            nn.Softplus()
         )
         
     def forward(self, x):
@@ -35,9 +36,15 @@ def train_heston_model(csv_path='data/heston_synthetic_dataset.csv', epochs=60, 
         
     # upload and split data
     df = pd.read_csv(csv_path)
+
+    if 'strike' not in df.columns and 'moneyness' in df.columns:
+        S0_medio = 6852.66  
+        df['strike'] = S0_medio * df['moneyness']
+
     x_cols = ['kappa', 'theta', 'xi', 'rho', 'V0', 'strike', 'time_to_maturity']
     x = df[x_cols].values
-    y = df['target_iv'].values.reshape(-1, 1)
+
+    y = (df['target_iv'].values * 100.0).astype(np.float32).reshape(-1, 1)
     
     x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
     
@@ -102,8 +109,8 @@ def train_heston_model(csv_path='data/heston_synthetic_dataset.csv', epochs=60, 
                 model.load_state_dict(best_model_weights)
                 break
                 
-    torch.save(model.state_dict(), 'data/heston_pytorch_model.pth')
-    joblib.dump(scaler, 'data/heston_pytorch_scaler.pkl')
+    torch.save(model.state_dict(), 'models/heston_pytorch_model.pth')
+    joblib.dump(scaler, 'models/heston_pytorch_scaler.pkl')
     return model, scaler
 
 
@@ -125,7 +132,7 @@ def heston_pytorch_objective(params, df_market, model, scaler):
     inputs[:, 2] = xi
     inputs[:, 3] = rho
     inputs[:, 4] = V0
-    inputs[:, 5] = df_market['strike'].values
+    inputs[:, 5] = (df_market['strike']/df_market['S_0']).values
     inputs[:, 6] = df_market['time_to_maturity'].values
     
     # Trasformazione dei dati con lo scaler e conversione in tensore PyTorch
