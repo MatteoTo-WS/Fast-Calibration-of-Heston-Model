@@ -10,17 +10,22 @@ import joblib
 class heston_volatility_nn(nn.Module):
     def __init__(self):
         super(heston_volatility_nn, self).__init__()
-        # define dense layers with smooth activation (softplus)
+        # SiLU for hidden layers (better gradients than Softplus)
+        # Softplus only on the output to guarantee IV > 0
         self.network = nn.Sequential(
             nn.Linear(7, 128),
             nn.SiLU(),
+            nn.Dropout(0.05),
             nn.Linear(128, 128),
             nn.SiLU(),
+            nn.Dropout(0.05),
             nn.Linear(128, 64),
+            nn.SiLU(),
+            nn.Linear(64, 64),
             nn.SiLU(),
             nn.Linear(64, 32),
             nn.SiLU(),
-            # output: implied volatility
+            # output: implied volatility (must be positive)
             nn.Linear(32, 1),
             nn.Softplus()
         )
@@ -37,11 +42,7 @@ def train_heston_model(csv_path='data/heston_synthetic_dataset.csv', epochs=60, 
     # upload and split data
     df = pd.read_csv(csv_path)
 
-    if 'strike' not in df.columns and 'moneyness' in df.columns:
-        S0_medio = 6852.66  
-        df['strike'] = S0_medio * df['moneyness']
-
-    x_cols = ['kappa', 'theta', 'xi', 'rho', 'V0', 'strike', 'time_to_maturity']
+    x_cols = ['kappa', 'theta', 'xi', 'rho', 'V0', 'moneyness', 'time_to_maturity']
     x = df[x_cols].values
 
     y = (df['target_iv'].values * 100.0).astype(np.float32).reshape(-1, 1)
@@ -61,7 +62,8 @@ def train_heston_model(csv_path='data/heston_synthetic_dataset.csv', epochs=60, 
     
     model = heston_volatility_nn()
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=max(3, patience // 3))
     
     best_loss = float('inf')
     patience_counter = 0
@@ -93,9 +95,13 @@ def train_heston_model(csv_path='data/heston_synthetic_dataset.csv', epochs=60, 
         with torch.no_grad():
             val_outputs = model(x_test_t)
             val_loss = criterion(val_outputs, y_test_t).item()
+        
+        # Step the LR scheduler based on validation loss
+        scheduler.step(val_loss)
             
         if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"Epoch {epoch+1}/{epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | LR: {current_lr:.6f}")
             
         # early stopping
         if val_loss < best_loss:
@@ -132,7 +138,7 @@ def heston_pytorch_objective(params, df_market, model, scaler):
     inputs[:, 2] = xi
     inputs[:, 3] = rho
     inputs[:, 4] = V0
-    inputs[:, 5] = (df_market['strike']/df_market['S_0']).values
+    inputs[:, 5] = (df_market['strike'] / df_market['S_0']).values
     inputs[:, 6] = df_market['time_to_maturity'].values
     
     # Trasformazione dei dati con lo scaler e conversione in tensore PyTorch
@@ -145,7 +151,7 @@ def heston_pytorch_objective(params, df_market, model, scaler):
         nn_predictions = model(inputs_t).numpy().flatten()
         
     # Calcolo della Loss richiesta dalla slide (MSE tra IV di mercato e IV di Heston)
-    market_iv = df_market['implied_vol'].values
+    market_iv = df_market['implied_vol'].values * 100  # Convert to % to match NN output
     mse = np.mean((market_iv - nn_predictions) ** 2)
     
     return mse
